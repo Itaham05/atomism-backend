@@ -1,0 +1,363 @@
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from sqlmodel import SQLModel, Session, create_engine, select
+from jose import jwt, JWTError
+from datetime import datetime, timedelta
+from passlib.context import CryptContext
+from sentence_transformers import SentenceTransformer
+import numpy as np
+import json
+from models import (Tenant, Model, Variant, Aggregate, Assembly, SubAssembly, Art,
+                     Part, Video, ServiceDoc, PartVideoLink, PartServiceDocLink, User)
+
+engine = create_engine("postgresql+psycopg2://neondb_owner:npg_dYFNtVK8Ur6h@ep-aged-rice-ayyy5kfu-pooler.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require")
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+SECRET_KEY = "atomism-dev-secret-change-later"
+ALGORITHM = "HS256"
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+print("Loading embedding model, this happens once at startup...")
+embedder = SentenceTransformer('all-MiniLM-L6-v2')
+print("Embedding model loaded.")
+
+@app.on_event("startup")
+def on_startup():
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        existing = session.exec(select(Tenant)).first()
+        if not existing:
+            tenant = Tenant(name="Royal Enfield")
+            session.add(tenant)
+            session.commit()
+            session.refresh(tenant)
+
+            model = Model(name="Classic 350", tenant_id=tenant.id)
+            session.add(model)
+            session.commit()
+            session.refresh(model)
+
+            variant = Variant(name="350cc Redditch Edition", vin="ME3ABCD12E1234567", model_id=model.id)
+            session.add(variant)
+            session.commit()
+            session.refresh(variant)
+
+            aggregate = Aggregate(name="Braking System", variant_id=variant.id)
+            session.add(aggregate)
+            session.commit()
+            session.refresh(aggregate)
+
+            assembly = Assembly(name="Front Brake Assembly", aggregate_id=aggregate.id)
+            session.add(assembly)
+            session.commit()
+            session.refresh(assembly)
+
+            subassembly = SubAssembly(name="Front Brake Caliper", assembly_id=assembly.id)
+            session.add(subassembly)
+            session.commit()
+            session.refresh(subassembly)
+
+            art = Art(image_url="https://example.com/brake-caliper-diagram.png", sub_assembly_id=subassembly.id)
+            session.add(art)
+            session.commit()
+            session.refresh(art)
+
+            part1 = Part(part_number="RE-BC-001", description="Front Brake Caliper Bolt", art_id=art.id)
+            session.add(part1)
+            session.commit()
+            session.refresh(part1)
+
+            part2 = Part(part_number="RE-BC-002", description="Front Brake Caliper Pin", art_id=art.id)
+            session.add(part2)
+            session.commit()
+            session.refresh(part2)
+
+            part1.embedding = json.dumps(embedder.encode(part1.description).tolist())
+            part2.embedding = json.dumps(embedder.encode(part2.description).tolist())
+            session.add(part1)
+            session.add(part2)
+            session.commit()
+
+            video = Video(url="https://youtube.com/watch?v=example", timestamp="02:14")
+            session.add(video)
+            session.commit()
+            session.refresh(video)
+
+            servicedoc = ServiceDoc(url="https://example.com/brake-caliper-service.pdf")
+            session.add(servicedoc)
+            session.commit()
+            session.refresh(servicedoc)
+
+            session.add(PartVideoLink(part_id=part1.id, video_id=video.id))
+            session.add(PartVideoLink(part_id=part2.id, video_id=video.id))
+            session.add(PartServiceDocLink(part_id=part1.id, servicedoc_id=servicedoc.id))
+            session.commit()
+
+            technician = User(name="Raj Kumar", role="technician", password=pwd_context.hash("raj123"), tenant_id=tenant.id)
+            session.add(technician)
+            session.commit()
+
+            admin = User(name="Priya Sharma", role="admin", password=pwd_context.hash("priya123"), tenant_id=tenant.id)
+            session.add(admin)
+            session.commit()
+
+def create_token(user: User):
+    expire = datetime.utcnow() + timedelta(hours=8)
+    data = {"sub": user.name, "role": user.role, "user_id": user.id, "tenant_id": user.tenant_id, "exp": expire}
+    return jwt.encode(data, SECRET_KEY, algorithm=ALGORITHM)
+
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+def require_admin(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can do this")
+    return current_user
+
+@app.post("/login")
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    with Session(engine) as session:
+        user = session.exec(select(User).where(User.name == form_data.username)).first()
+        if not user or not pwd_context.verify(form_data.password, user.password):
+            raise HTTPException(status_code=401, detail="Incorrect name or password")
+        token = create_token(user)
+        return {"access_token": token, "token_type": "bearer"}
+
+@app.get("/me")
+def read_current_user(current_user: dict = Depends(get_current_user)):
+    return current_user
+
+@app.get("/models")
+def get_models(current_user: dict = Depends(get_current_user)):
+    with Session(engine) as session:
+        return session.exec(select(Model).where(Model.tenant_id == current_user["tenant_id"])).all()
+
+@app.get("/models/{model_id}/variants")
+def get_variants(model_id: int, current_user: dict = Depends(get_current_user)):
+    with Session(engine) as session:
+        model = session.get(Model, model_id)
+        if not model or model.tenant_id != current_user["tenant_id"]:
+            raise HTTPException(status_code=404, detail="Model not found")
+        return session.exec(select(Variant).where(Variant.model_id == model_id)).all()
+
+def get_owned_variant(variant_id: int, session: Session, current_user: dict):
+    variant = session.get(Variant, variant_id)
+    if not variant:
+        raise HTTPException(status_code=404, detail="Variant not found")
+    model = session.get(Model, variant.model_id)
+    if not model or model.tenant_id != current_user["tenant_id"]:
+        raise HTTPException(status_code=404, detail="Variant not found")
+    return variant
+
+@app.get("/variants/by-vin/{vin}")
+def get_variant_by_vin(vin: str, current_user: dict = Depends(get_current_user)):
+    with Session(engine) as session:
+        variant = session.exec(select(Variant).where(Variant.vin == vin)).first()
+        if not variant:
+            return None
+        model = session.get(Model, variant.model_id)
+        if not model or model.tenant_id != current_user["tenant_id"]:
+            return None
+        return variant
+
+@app.get("/variants/{variant_id}/aggregates")
+def get_aggregates(variant_id: int, current_user: dict = Depends(get_current_user)):
+    with Session(engine) as session:
+        get_owned_variant(variant_id, session, current_user)
+        return session.exec(select(Aggregate).where(Aggregate.variant_id == variant_id)).all()
+
+def get_owned_aggregate(aggregate_id: int, session: Session, current_user: dict):
+    aggregate = session.get(Aggregate, aggregate_id)
+    if not aggregate:
+        raise HTTPException(status_code=404, detail="Aggregate not found")
+    get_owned_variant(aggregate.variant_id, session, current_user)
+    return aggregate
+
+@app.get("/aggregates/{aggregate_id}/assemblies")
+def get_assemblies(aggregate_id: int, current_user: dict = Depends(get_current_user)):
+    with Session(engine) as session:
+        get_owned_aggregate(aggregate_id, session, current_user)
+        return session.exec(select(Assembly).where(Assembly.aggregate_id == aggregate_id)).all()
+
+def get_owned_assembly(assembly_id: int, session: Session, current_user: dict):
+    assembly = session.get(Assembly, assembly_id)
+    if not assembly:
+        raise HTTPException(status_code=404, detail="Assembly not found")
+    get_owned_aggregate(assembly.aggregate_id, session, current_user)
+    return assembly
+
+@app.get("/assemblies/{assembly_id}/subassemblies")
+def get_subassemblies(assembly_id: int, current_user: dict = Depends(get_current_user)):
+    with Session(engine) as session:
+        get_owned_assembly(assembly_id, session, current_user)
+        return session.exec(select(SubAssembly).where(SubAssembly.assembly_id == assembly_id)).all()
+
+def get_owned_subassembly(sub_assembly_id: int, session: Session, current_user: dict):
+    subassembly = session.get(SubAssembly, sub_assembly_id)
+    if not subassembly:
+        raise HTTPException(status_code=404, detail="Sub-assembly not found")
+    get_owned_assembly(subassembly.assembly_id, session, current_user)
+    return subassembly
+
+@app.get("/subassemblies/{sub_assembly_id}/art")
+def get_art(sub_assembly_id: int, current_user: dict = Depends(get_current_user)):
+    with Session(engine) as session:
+        get_owned_subassembly(sub_assembly_id, session, current_user)
+        return session.exec(select(Art).where(Art.sub_assembly_id == sub_assembly_id)).first()
+
+@app.get("/art/{art_id}/parts")
+def get_parts(art_id: int, current_user: dict = Depends(get_current_user)):
+    with Session(engine) as session:
+        art = session.get(Art, art_id)
+        if not art:
+            raise HTTPException(status_code=404, detail="Art not found")
+        get_owned_subassembly(art.sub_assembly_id, session, current_user)
+        return session.exec(select(Part).where(Part.art_id == art_id)).all()
+
+def part_belongs_to_tenant(part: Part, session: Session, tenant_id: int) -> bool:
+    art = session.get(Art, part.art_id)
+    if not art:
+        return False
+    subassembly = session.get(SubAssembly, art.sub_assembly_id)
+    if not subassembly:
+        return False
+    assembly = session.get(Assembly, subassembly.assembly_id)
+    if not assembly:
+        return False
+    aggregate = session.get(Aggregate, assembly.aggregate_id)
+    if not aggregate:
+        return False
+    variant = session.get(Variant, aggregate.variant_id)
+    if not variant:
+        return False
+    model = session.get(Model, variant.model_id)
+    if not model:
+        return False
+    return model.tenant_id == tenant_id
+
+@app.get("/parts/by-number/{part_number}")
+def get_part_by_number(part_number: str, current_user: dict = Depends(get_current_user)):
+    with Session(engine) as session:
+        part = session.exec(select(Part).where(Part.part_number == part_number)).first()
+        if not part or not part_belongs_to_tenant(part, session, current_user["tenant_id"]):
+            return None
+        return part
+
+@app.get("/parts/search")
+def search_parts(q: str, current_user: dict = Depends(get_current_user)):
+    with Session(engine) as session:
+        all_matches = session.exec(select(Part).where(Part.description.ilike(f"%{q}%"))).all()
+        return [p for p in all_matches if part_belongs_to_tenant(p, session, current_user["tenant_id"])]
+
+@app.get("/parts/{part_id}/videos")
+def get_videos(part_id: int):
+    with Session(engine) as session:
+        links = session.exec(select(PartVideoLink).where(PartVideoLink.part_id == part_id)).all()
+        video_ids = [link.video_id for link in links]
+        videos = session.exec(select(Video).where(Video.id.in_(video_ids))).all()
+        if not videos:
+            return {"available": False, "videos": []}
+        return {"available": True, "videos": videos}
+
+@app.get("/videos/{video_id}/parts")
+def get_parts_for_video(video_id: int):
+    with Session(engine) as session:
+        links = session.exec(select(PartVideoLink).where(PartVideoLink.video_id == video_id)).all()
+        part_ids = [link.part_id for link in links]
+        return session.exec(select(Part).where(Part.id.in_(part_ids))).all()
+
+@app.get("/parts/{part_id}/servicedocs")
+def get_servicedocs(part_id: int):
+    with Session(engine) as session:
+        links = session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == part_id)).all()
+        doc_ids = [link.servicedoc_id for link in links]
+        docs = session.exec(select(ServiceDoc).where(ServiceDoc.id.in_(doc_ids))).all()
+        if not docs:
+            return {"available": False, "servicedocs": []}
+        return {"available": True, "servicedocs": docs}
+
+@app.get("/users")
+def get_users():
+    with Session(engine) as session:
+        return session.exec(select(User)).all()
+
+@app.post("/parts")
+def create_part(part_number: str, description: str, art_id: int, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        if not part_number.strip() or not description.strip():
+            raise HTTPException(status_code=422, detail="part_number and description cannot be empty")
+        art = session.get(Art, art_id)
+        if not art:
+            raise HTTPException(status_code=404, detail="art_id does not exist")
+        embedding = json.dumps(embedder.encode(description).tolist())
+        new_part = Part(part_number=part_number, description=description, art_id=art_id, embedding=embedding)
+        session.add(new_part)
+        session.commit()
+        session.refresh(new_part)
+        return new_part
+
+@app.put("/parts/{part_id}")
+def update_part(part_id: int, part_number: str = None, description: str = None, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        part = session.get(Part, part_id)
+        if not part:
+            raise HTTPException(status_code=404, detail="Part not found")
+        if part_number is not None:
+            part.part_number = part_number
+        if description is not None:
+            part.description = description
+            part.embedding = json.dumps(embedder.encode(description).tolist())
+        session.add(part)
+        session.commit()
+        session.refresh(part)
+        return part
+
+@app.delete("/parts/{part_id}")
+def delete_part(part_id: int, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        part = session.get(Part, part_id)
+        if not part:
+            raise HTTPException(status_code=404, detail="Part not found")
+        session.delete(part)
+        session.commit()
+        return {"deleted": True, "part_id": part_id}
+
+@app.get("/chatbot/ask")
+def chatbot_ask(q: str):
+    query_vec = embedder.encode(q)
+    with Session(engine) as session:
+        parts = session.exec(select(Part)).all()
+        best_part = None
+        best_score = -1
+        for part in parts:
+            if not part.embedding:
+                continue
+            part_vec = np.array(json.loads(part.embedding))
+            score = np.dot(query_vec, part_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(part_vec))
+            if score > best_score:
+                best_score = score
+                best_part = part
+        if not best_part:
+            return {"answer": "No matching part found"}
+        return {
+            "best_match": {
+                "part_number": best_part.part_number,
+                "description": best_part.description,
+                "id": best_part.id
+            },
+            "confidence": float(best_score)
+        }
