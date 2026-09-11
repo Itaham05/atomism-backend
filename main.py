@@ -8,10 +8,12 @@ from passlib.context import CryptContext
 from sentence_transformers import SentenceTransformer
 import numpy as np
 import json
+import os
 from models import (Tenant, Model, Variant, Aggregate, Assembly, SubAssembly, Art,
                      Part, Video, ServiceDoc, PartVideoLink, PartServiceDocLink, User)
 
-engine = create_engine("postgresql+psycopg2://neondb_owner:npg_dYFNtVK8Ur6h@ep-aged-rice-ayyy5kfu-pooler.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg2://neondb_owner:npg_dYFNtVK8Ur6h@ep-aged-rice-ayyy5kfu-pooler.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require")
+engine = create_engine(DATABASE_URL)
 app = FastAPI()
 
 app.add_middleware(
