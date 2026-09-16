@@ -29,6 +29,8 @@ ALGORITHM = "HS256"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+SEED_DEMO_DATA = os.environ.get("SEED_DEMO_DATA", "true").lower() == "true"
+
 print("Loading embedding model, this happens once at startup...")
 embedder = SentenceTransformer('all-MiniLM-L6-v2')
 print("Embedding model loaded.")
@@ -36,6 +38,8 @@ print("Embedding model loaded.")
 @app.on_event("startup")
 def on_startup():
     SQLModel.metadata.create_all(engine)
+    if not SEED_DEMO_DATA:
+        return
     with Session(engine) as session:
         existing = session.exec(select(Tenant)).first()
         if not existing:
@@ -74,12 +78,12 @@ def on_startup():
             session.commit()
             session.refresh(art)
 
-            part1 = Part(part_number="RE-BC-001", description="Front Brake Caliper Bolt", art_id=art.id)
+            part1 = Part(part_number="RE-BC-001", description="Front Brake Caliper Bolt", art_id=art.id, hotspot_x=30, hotspot_y=45)
             session.add(part1)
             session.commit()
             session.refresh(part1)
 
-            part2 = Part(part_number="RE-BC-002", description="Front Brake Caliper Pin", art_id=art.id)
+            part2 = Part(part_number="RE-BC-002", description="Front Brake Caliper Pin", art_id=art.id, hotspot_x=65, hotspot_y=60)
             session.add(part2)
             session.commit()
             session.refresh(part2)
@@ -298,7 +302,7 @@ def get_users():
         return session.exec(select(User)).all()
 
 @app.post("/parts")
-def create_part(part_number: str, description: str, art_id: int, admin: dict = Depends(require_admin)):
+def create_part(part_number: str, description: str, art_id: int, hotspot_x: float = 50, hotspot_y: float = 50, admin: dict = Depends(require_admin)):
     with Session(engine) as session:
         if not part_number.strip() or not description.strip():
             raise HTTPException(status_code=422, detail="part_number and description cannot be empty")
@@ -306,7 +310,7 @@ def create_part(part_number: str, description: str, art_id: int, admin: dict = D
         if not art:
             raise HTTPException(status_code=404, detail="art_id does not exist")
         embedding = json.dumps(embedder.encode(description).tolist())
-        new_part = Part(part_number=part_number, description=description, art_id=art_id, embedding=embedding)
+        new_part = Part(part_number=part_number, description=description, art_id=art_id, embedding=embedding, hotspot_x=hotspot_x, hotspot_y=hotspot_y)
         session.add(new_part)
         session.commit()
         session.refresh(new_part)

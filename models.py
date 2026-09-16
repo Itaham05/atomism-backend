@@ -42,6 +42,8 @@ class Part(SQLModel, table=True):
     description: str
     art_id: Optional[int] = Field(default=None, foreign_key="art.id")
     embedding: Optional[str] = None
+    hotspot_x: Optional[float] = None
+    hotspot_y: Optional[float] = None
 
 class Video(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
