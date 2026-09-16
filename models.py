@@ -63,6 +63,7 @@ class PartServiceDocLink(SQLModel, table=True):
     servicedoc_id: Optional[int] = Field(default=None, foreign_key="servicedoc.id", primary_key=True)
 
 class User(SQLModel, table=True):
+    __tablename__ = "users"
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
     role: str
