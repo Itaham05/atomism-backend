@@ -341,7 +341,279 @@ def delete_part(part_id: int, admin: dict = Depends(require_admin)):
         session.delete(part)
         session.commit()
         return {"deleted": True, "part_id": part_id}
+# --- Model CRUD ---
+@app.post("/models")
+def create_model(name: str, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        if not name.strip():
+            raise HTTPException(status_code=422, detail="name cannot be empty")
+        new_model = Model(name=name, tenant_id=admin["tenant_id"])
+        session.add(new_model)
+        session.commit()
+        session.refresh(new_model)
+        return new_model
 
+@app.put("/models/{model_id}")
+def update_model(model_id: int, name: str, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        m = session.get(Model, model_id)
+        if not m or m.tenant_id != admin["tenant_id"]:
+            raise HTTPException(status_code=404, detail="Model not found")
+        m.name = name
+        session.add(m)
+        session.commit()
+        session.refresh(m)
+        return m
+
+@app.delete("/models/{model_id}")
+def delete_model(model_id: int, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        m = session.get(Model, model_id)
+        if not m or m.tenant_id != admin["tenant_id"]:
+            raise HTTPException(status_code=404, detail="Model not found")
+        variants = session.exec(select(Variant).where(Variant.model_id == model_id)).all()
+        for v in variants:
+            aggregates = session.exec(select(Aggregate).where(Aggregate.variant_id == v.id)).all()
+            for agg in aggregates:
+                assemblies = session.exec(select(Assembly).where(Assembly.aggregate_id == agg.id)).all()
+                for asm in assemblies:
+                    subs = session.exec(select(SubAssembly).where(SubAssembly.assembly_id == asm.id)).all()
+                    for sub in subs:
+                        arts = session.exec(select(Art).where(Art.sub_assembly_id == sub.id)).all()
+                        for art in arts:
+                            parts = session.exec(select(Part).where(Part.art_id == art.id)).all()
+                            for part in parts:
+                                video_links = session.exec(select(PartVideoLink).where(PartVideoLink.part_id == part.id)).all()
+                                doc_links = session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == part.id)).all()
+                                for link in video_links:
+                                    session.delete(link)
+                                for link in doc_links:
+                                    session.delete(link)
+                                session.flush()
+                                session.delete(part)
+                            session.flush()
+                            session.delete(art)
+                        session.flush()
+                        session.delete(sub)
+                    session.flush()
+                    session.delete(asm)
+                session.flush()
+                session.delete(agg)
+            session.flush()
+            session.delete(v)
+        session.flush()
+        session.delete(m)
+        session.commit()
+        return {"deleted": True, "model_id": model_id}
+
+
+# --- Variant CRUD ---
+@app.post("/models/{model_id}/variants")
+def create_variant(model_id: int, name: str, vin: str = None, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        model = session.get(Model, model_id)
+        if not model or model.tenant_id != admin["tenant_id"]:
+            raise HTTPException(status_code=404, detail="Model not found")
+        if not name.strip():
+            raise HTTPException(status_code=422, detail="name cannot be empty")
+        new_variant = Variant(name=name, vin=vin, model_id=model_id)
+        session.add(new_variant)
+        session.commit()
+        session.refresh(new_variant)
+        return new_variant
+
+@app.put("/variants/{variant_id}")
+def update_variant(variant_id: int, name: str = None, vin: str = None, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        v = get_owned_variant(variant_id, session, admin)
+        if name is not None:
+            v.name = name
+        if vin is not None:
+            v.vin = vin
+        session.add(v)
+        session.commit()
+        session.refresh(v)
+        return v
+
+@app.delete("/variants/{variant_id}")
+def delete_variant(variant_id: int, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        v = get_owned_variant(variant_id, session, admin)
+        aggregates = session.exec(select(Aggregate).where(Aggregate.variant_id == v.id)).all()
+        for agg in aggregates:
+            assemblies = session.exec(select(Assembly).where(Assembly.aggregate_id == agg.id)).all()
+            for asm in assemblies:
+                subs = session.exec(select(SubAssembly).where(SubAssembly.assembly_id == asm.id)).all()
+                for sub in subs:
+                    arts = session.exec(select(Art).where(Art.sub_assembly_id == sub.id)).all()
+                    for art in arts:
+                        parts = session.exec(select(Part).where(Part.art_id == art.id)).all()
+                        for part in parts:
+                            for link in session.exec(select(PartVideoLink).where(PartVideoLink.part_id == part.id)).all():
+                                session.delete(link)
+                            for link in session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == part.id)).all():
+                                session.delete(link)
+                            session.flush()
+                            session.delete(part)
+                        session.flush()
+                        session.delete(art)
+                    session.flush()
+                    session.delete(sub)
+                session.flush()
+                session.delete(asm)
+            session.flush()
+            session.delete(agg)
+        session.flush()
+        session.delete(v)
+        session.commit()
+        return {"deleted": True, "variant_id": variant_id}
+
+
+# --- Aggregate CRUD ---
+@app.post("/variants/{variant_id}/aggregates")
+def create_aggregate(variant_id: int, name: str, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        get_owned_variant(variant_id, session, admin)
+        if not name.strip():
+            raise HTTPException(status_code=422, detail="name cannot be empty")
+        new_agg = Aggregate(name=name, variant_id=variant_id)
+        session.add(new_agg)
+        session.commit()
+        session.refresh(new_agg)
+        return new_agg
+
+@app.put("/aggregates/{aggregate_id}")
+def update_aggregate(aggregate_id: int, name: str, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        agg = get_owned_aggregate(aggregate_id, session, admin)
+        agg.name = name
+        session.add(agg)
+        session.commit()
+        session.refresh(agg)
+        return agg
+
+@app.delete("/aggregates/{aggregate_id}")
+def delete_aggregate(aggregate_id: int, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        agg = get_owned_aggregate(aggregate_id, session, admin)
+        assemblies = session.exec(select(Assembly).where(Assembly.aggregate_id == agg.id)).all()
+        for asm in assemblies:
+            subs = session.exec(select(SubAssembly).where(SubAssembly.assembly_id == asm.id)).all()
+            for sub in subs:
+                arts = session.exec(select(Art).where(Art.sub_assembly_id == sub.id)).all()
+                for art in arts:
+                    parts = session.exec(select(Part).where(Part.art_id == art.id)).all()
+                    for part in parts:
+                        for link in session.exec(select(PartVideoLink).where(PartVideoLink.part_id == part.id)).all():
+                            session.delete(link)
+                        for link in session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == part.id)).all():
+                            session.delete(link)
+                        session.flush()
+                        session.delete(part)
+                    session.flush()
+                    session.delete(art)
+                session.flush()
+                session.delete(sub)
+            session.flush()
+            session.delete(asm)
+        session.flush()
+        session.delete(agg)
+        session.commit()
+        return {"deleted": True, "aggregate_id": aggregate_id}
+
+
+# --- Assembly CRUD ---
+@app.post("/aggregates/{aggregate_id}/assemblies")
+def create_assembly(aggregate_id: int, name: str, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        get_owned_aggregate(aggregate_id, session, admin)
+        if not name.strip():
+            raise HTTPException(status_code=422, detail="name cannot be empty")
+        new_asm = Assembly(name=name, aggregate_id=aggregate_id)
+        session.add(new_asm)
+        session.commit()
+        session.refresh(new_asm)
+        return new_asm
+
+@app.put("/assemblies/{assembly_id}")
+def update_assembly(assembly_id: int, name: str, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        asm = get_owned_assembly(assembly_id, session, admin)
+        asm.name = name
+        session.add(asm)
+        session.commit()
+        session.refresh(asm)
+        return asm
+
+@app.delete("/assemblies/{assembly_id}")
+def delete_assembly(assembly_id: int, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        asm = get_owned_assembly(assembly_id, session, admin)
+        subs = session.exec(select(SubAssembly).where(SubAssembly.assembly_id == asm.id)).all()
+        for sub in subs:
+            arts = session.exec(select(Art).where(Art.sub_assembly_id == sub.id)).all()
+            for art in arts:
+                parts = session.exec(select(Part).where(Part.art_id == art.id)).all()
+                for part in parts:
+                    for link in session.exec(select(PartVideoLink).where(PartVideoLink.part_id == part.id)).all():
+                        session.delete(link)
+                    for link in session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == part.id)).all():
+                        session.delete(link)
+                    session.flush()
+                    session.delete(part)
+                session.flush()
+                session.delete(art)
+            session.flush()
+            session.delete(sub)
+        session.flush()
+        session.delete(asm)
+        session.commit()
+        return {"deleted": True, "assembly_id": assembly_id}
+
+
+# --- Sub-Assembly CRUD ---
+@app.post("/assemblies/{assembly_id}/subassemblies")
+def create_subassembly(assembly_id: int, name: str, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        get_owned_assembly(assembly_id, session, admin)
+        if not name.strip():
+            raise HTTPException(status_code=422, detail="name cannot be empty")
+        new_sub = SubAssembly(name=name, assembly_id=assembly_id)
+        session.add(new_sub)
+        session.commit()
+        session.refresh(new_sub)
+        return new_sub
+
+@app.put("/subassemblies/{sub_assembly_id}")
+def update_subassembly(sub_assembly_id: int, name: str, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        sub = get_owned_subassembly(sub_assembly_id, session, admin)
+        sub.name = name
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+        return sub
+
+@app.delete("/subassemblies/{sub_assembly_id}")
+def delete_subassembly(sub_assembly_id: int, admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        sub = get_owned_subassembly(sub_assembly_id, session, admin)
+        arts = session.exec(select(Art).where(Art.sub_assembly_id == sub.id)).all()
+        for art in arts:
+            parts = session.exec(select(Part).where(Part.art_id == art.id)).all()
+            for part in parts:
+                for link in session.exec(select(PartVideoLink).where(PartVideoLink.part_id == part.id)).all():
+                    session.delete(link)
+                for link in session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == part.id)).all():
+                    session.delete(link)
+                session.flush()
+                session.delete(part)
+            session.flush()
+            session.delete(art)
+        session.flush()
+        session.delete(sub)
+        session.commit()
+        return {"deleted": True, "sub_assembly_id": sub_assembly_id}
 @app.get("/chatbot/ask")
 def chatbot_ask(q: str):
     query_vec = embedder.encode(q)
