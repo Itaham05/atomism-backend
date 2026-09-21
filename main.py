@@ -25,7 +25,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SECRET_KEY = "atomism-dev-secret-change-later"
+SECRET_KEY = os.environ.get("SECRET_KEY", "atomism-dev-secret-change-later")
 ALGORITHM = "HS256"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
