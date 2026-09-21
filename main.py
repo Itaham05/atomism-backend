@@ -12,7 +12,13 @@ import json
 import os
 from models import (Tenant, Model, Variant, Aggregate, Assembly, SubAssembly, Art,
                      Part, Video, ServiceDoc, PartVideoLink, PartServiceDocLink, User)
-
+from pydantic import BaseModel
+from typing import List, Optional as OptionalType
+class BulkPartInput(BaseModel):
+    part_number: str
+    description: str
+    hotspot_x: OptionalType[float] = 50
+    hotspot_y: OptionalType[float] = 50
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg2://neondb_owner:npg_dYFNtVK8Ur6h@ep-aged-rice-ayyy5kfu.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require")
 engine = create_engine(DATABASE_URL)
 app = FastAPI()
@@ -626,6 +632,39 @@ def delete_part(part_id: int, admin: dict = Depends(require_admin)):
         session.commit()
         return {"deleted": True, "part_id": part_id}
 
+@app.post("/art/{art_id}/parts/bulk")
+def bulk_create_parts(art_id: int, parts: List[BulkPartInput], admin: dict = Depends(require_admin)):
+    with Session(engine) as session:
+        art = session.get(Art, art_id)
+        if not art:
+            raise HTTPException(status_code=404, detail="art_id does not exist")
+
+        created = []
+        errors = []
+        for i, p in enumerate(parts):
+            if not p.part_number.strip() or not p.description.strip():
+                errors.append({"row": i, "error": "part_number and description cannot be empty"})
+                continue
+            embedding = json.dumps(embedder.encode(p.description).tolist())
+            new_part = Part(
+                part_number=p.part_number,
+                description=p.description,
+                art_id=art_id,
+                embedding=embedding,
+                hotspot_x=p.hotspot_x,
+                hotspot_y=p.hotspot_y,
+            )
+            session.add(new_part)
+            created.append(p.part_number)
+
+        session.commit()
+        return {
+            "created_count": len(created),
+            "created_part_numbers": created,
+            "errors": errors,
+        }
+
+    
 @app.get("/chatbot/ask")
 def chatbot_ask(q: str):
     query_vec = embedder.encode(q)
