@@ -120,6 +120,10 @@ def on_startup():
             session.add(admin)
             session.commit()
 
+            approver = User(name="Vikram Rao", role="approver", password=pwd_context.hash("vikram123"), tenant_id=tenant.id)
+            session.add(approver)
+            session.commit()
+
 def create_token(user: User):
     expire = datetime.utcnow() + timedelta(hours=8)
     data = {"sub": user.name, "role": user.role, "user_id": user.id, "tenant_id": user.tenant_id, "exp": expire}
@@ -135,6 +139,11 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
 def require_admin(current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Only admins can do this")
+    return current_user
+
+def require_admin_or_approver(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in ("admin", "approver"):
+        raise HTTPException(status_code=403, detail="Only admins or approvers can do this")
     return current_user
 
 @app.post("/login")
@@ -565,7 +574,9 @@ def get_servicedocs(part_id: int):
         return {"available": True, "servicedocs": docs}
 
 @app.get("/users")
-def get_users():
+def get_users(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in ("admin", "approver"):
+        raise HTTPException(status_code=403, detail="Not authorized to view users")
     with Session(engine) as session:
         return session.exec(select(User)).all()
 
