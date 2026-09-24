@@ -62,7 +62,7 @@ def on_startup():
             session.commit()
             session.refresh(model)
 
-            variant = Variant(name="350cc Redditch Edition", vin="ME3ABCD12E1234567", model_id=model.id)
+            variant = Variant(name="350cc Redditch Edition", vin="ME3ABCD12E1234567", engine_number="EN350REC2024001", model_id=model.id)
             session.add(variant)
             session.commit()
             session.refresh(variant)
@@ -321,6 +321,29 @@ def get_variant_by_vin(vin: str, current_user: dict = Depends(get_current_user))
         if not model or model.tenant_id != current_user["tenant_id"]:
             return None
         return variant
+@app.get("/variants/by-engine/{engine_number}")
+def get_variant_by_engine(engine_number: str, current_user: dict = Depends(get_current_user)):
+    with Session(engine) as session:
+        variant = session.exec(select(Variant).where(Variant.engine_number == engine_number)).first()
+        if not variant:
+            return None
+        model = session.get(Model, variant.model_id)
+        if not model or model.tenant_id != current_user["tenant_id"]:
+            return None
+        return variant
+
+@app.get("/aggregates/search")
+def search_aggregates(q: str, current_user: dict = Depends(get_current_user)):
+    with Session(engine) as session:
+        matches = session.exec(select(Aggregate).where(Aggregate.name.ilike(f"%{q}%"))).all()
+        result = []
+        for agg in matches:
+            try:
+                get_owned_aggregate(agg.id, session, current_user)
+                result.append(agg)
+            except HTTPException:
+                continue
+        return result
 
 @app.get("/variants/{variant_id}/aggregates")
 def get_aggregates(variant_id: int, current_user: dict = Depends(get_current_user)):

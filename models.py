@@ -14,6 +14,7 @@ class Variant(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
     vin: Optional[str] = None
+    engine_number: Optional[str] = None
     model_id: Optional[int] = Field(default=None, foreign_key="model.id")
 
 class Aggregate(SQLModel, table=True):
