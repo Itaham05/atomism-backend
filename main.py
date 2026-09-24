@@ -744,27 +744,27 @@ def chatbot_ask(q: str, current_user: dict = Depends(get_current_user)):
         if not best_part:
             return {"answer": "I couldn't find a matching part for that."}
 
-        citation = None
+        citations = []
         video_link = session.exec(select(PartVideoLink).where(PartVideoLink.part_id == best_part.id)).first()
         if video_link:
             video = session.get(Video, video_link.video_id)
             if video:
-                citation = {
+                citations.append({
                     "type": "video",
                     "url": video.url,
                     "timestamp": video_link.timestamp or video.timestamp,
                     "label": video.title or "Training video",
-                }
-        if not citation:
-            doc_link = session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == best_part.id)).first()
-            if doc_link:
-                doc = session.get(ServiceDoc, doc_link.servicedoc_id)
-                if doc:
-                    citation = {"type": "servicedoc", "url": doc.url, "label": "Service document"}
+                })
+        doc_link = session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == best_part.id)).first()
+        if doc_link:
+            doc = session.get(ServiceDoc, doc_link.servicedoc_id)
+            if doc:
+                citations.append({"type": "servicedoc", "url": doc.url, "label": "Service document"})
 
         citation_hint = ""
-        if citation and citation["type"] == "video" and citation.get("timestamp"):
-            citation_hint = f" Mention that timestamp {citation['timestamp']} in the video shows this exact step."
+        video_citation = next((c for c in citations if c["type"] == "video"), None)
+        if video_citation and video_citation.get("timestamp"):
+            citation_hint = f" Mention that timestamp {video_citation['timestamp']} in the video shows this exact step."
 
         completion = groq_client.chat.completions.create(
             model="openai/gpt-oss-20b",
@@ -787,5 +787,5 @@ def chatbot_ask(q: str, current_user: dict = Depends(get_current_user)):
                 "id": best_part.id
             },
             "confidence": float(best_score),
-            "citation": citation
+            "citations": citations
         }
