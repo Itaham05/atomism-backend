@@ -103,7 +103,7 @@ def on_startup():
             session.add(part2)
             session.commit()
 
-            video = Video(url="https://youtube.com/watch?v=example", timestamp="02:14")
+            video = Video(url="https://youtube.com/watch?v=example", timestamp="60", title="Front Brake Caliper Service")
             session.add(video)
             session.commit()
             session.refresh(video)
@@ -113,8 +113,8 @@ def on_startup():
             session.commit()
             session.refresh(servicedoc)
 
-            session.add(PartVideoLink(part_id=part1.id, video_id=video.id))
-            session.add(PartVideoLink(part_id=part2.id, video_id=video.id))
+            session.add(PartVideoLink(part_id=part1.id, video_id=video.id, timestamp="45"))
+            session.add(PartVideoLink(part_id=part2.id, video_id=video.id, timestamp="134"))
             session.add(PartServiceDocLink(part_id=part1.id, servicedoc_id=servicedoc.id))
             session.commit()
 
@@ -355,8 +355,30 @@ def get_owned_aggregate(aggregate_id: int, session: Session, current_user: dict)
     aggregate = session.get(Aggregate, aggregate_id)
     if not aggregate:
         raise HTTPException(status_code=404, detail="Aggregate not found")
-    get_owned_variant(aggregate.variant_id, session, current_user)
+        get_owned_variant(aggregate.variant_id, session, current_user)
     return aggregate
+
+def get_part_tenant_id(part, session: Session):
+    """Walk Part -> Art -> SubAssembly -> Assembly -> Aggregate -> Variant -> Model to find the owning tenant_id."""
+    if not part or not part.art_id:
+        return None
+    art = session.get(Art, part.art_id)
+    if not art or not art.sub_assembly_id:
+        return None
+    sub = session.get(SubAssembly, art.sub_assembly_id)
+    if not sub or not sub.assembly_id:
+        return None
+    asm = session.get(Assembly, sub.assembly_id)
+    if not asm or not asm.aggregate_id:
+        return None
+    agg = session.get(Aggregate, asm.aggregate_id)
+    if not agg or not agg.variant_id:
+        return None
+    variant = session.get(Variant, agg.variant_id)
+    if not variant or not variant.model_id:
+        return None
+    model = session.get(Model, variant.model_id)
+    return model.tenant_id if model else None
 
 @app.post("/variants/{variant_id}/aggregates")
 def create_aggregate(variant_id: int, name: str, admin: dict = Depends(require_admin)):
@@ -576,11 +598,22 @@ def search_parts(q: str, current_user: dict = Depends(get_current_user)):
         return [p for p in all_matches if part_belongs_to_tenant(p, session, current_user["tenant_id"])]
 
 @app.get("/parts/{part_id}/videos")
-def get_videos(part_id: int):
+def get_videos(part_id: int, current_user: dict = Depends(get_current_user)):
     with Session(engine) as session:
+        part = session.get(Part, part_id)
+        if not part or get_part_tenant_id(part, session) != current_user["tenant_id"]:
+            raise HTTPException(status_code=404, detail="Part not found")
         links = session.exec(select(PartVideoLink).where(PartVideoLink.part_id == part_id)).all()
-        video_ids = [link.video_id for link in links]
-        videos = session.exec(select(Video).where(Video.id.in_(video_ids))).all()
+        videos = []
+        for link in links:
+            video = session.get(Video, link.video_id)
+            if video:
+                videos.append({
+                    "id": video.id,
+                    "url": video.url,
+                    "title": video.title,
+                    "timestamp": link.timestamp or video.timestamp,
+                })
         if not videos:
             return {"available": False, "videos": []}
         return {"available": True, "videos": videos}
@@ -593,8 +626,11 @@ def get_parts_for_video(video_id: int):
         return session.exec(select(Part).where(Part.id.in_(part_ids))).all()
 
 @app.get("/parts/{part_id}/servicedocs")
-def get_servicedocs(part_id: int):
+def get_servicedocs(part_id: int, current_user: dict = Depends(get_current_user)):
     with Session(engine) as session:
+        part = session.get(Part, part_id)
+        if not part or get_part_tenant_id(part, session) != current_user["tenant_id"]:
+            raise HTTPException(status_code=404, detail="Part not found")
         links = session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == part_id)).all()
         doc_ids = [link.servicedoc_id for link in links]
         docs = session.exec(select(ServiceDoc).where(ServiceDoc.id.in_(doc_ids))).all()
@@ -689,7 +725,7 @@ def bulk_create_parts(art_id: int, parts: List[BulkPartInput], admin: dict = Dep
 
     
 @app.get("/chatbot/ask")
-def chatbot_ask(q: str):
+def chatbot_ask(q: str, current_user: dict = Depends(get_current_user)):
     query_vec = embedder.encode(q)
     with Session(engine) as session:
         parts = session.exec(select(Part)).all()
@@ -697,6 +733,8 @@ def chatbot_ask(q: str):
         best_score = -1
         for part in parts:
             if not part.embedding:
+                continue
+            if get_part_tenant_id(part, session) != current_user["tenant_id"]:
                 continue
             part_vec = np.array(json.loads(part.embedding))
             score = np.dot(query_vec, part_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(part_vec))
@@ -706,11 +744,33 @@ def chatbot_ask(q: str):
         if not best_part:
             return {"answer": "I couldn't find a matching part for that."}
 
+        citation = None
+        video_link = session.exec(select(PartVideoLink).where(PartVideoLink.part_id == best_part.id)).first()
+        if video_link:
+            video = session.get(Video, video_link.video_id)
+            if video:
+                citation = {
+                    "type": "video",
+                    "url": video.url,
+                    "timestamp": video_link.timestamp or video.timestamp,
+                    "label": video.title or "Training video",
+                }
+        if not citation:
+            doc_link = session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == best_part.id)).first()
+            if doc_link:
+                doc = session.get(ServiceDoc, doc_link.servicedoc_id)
+                if doc:
+                    citation = {"type": "servicedoc", "url": doc.url, "label": "Service document"}
+
+        citation_hint = ""
+        if citation and citation["type"] == "video" and citation.get("timestamp"):
+            citation_hint = f" Mention that timestamp {citation['timestamp']} in the video shows this exact step."
+
         completion = groq_client.chat.completions.create(
             model="openai/gpt-oss-20b",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant for vehicle technicians. Keep answers to one short, friendly sentence. Do not show your reasoning, only give the final answer."},
-                {"role": "user", "content": f"A technician asked: '{q}'. The matching part is '{best_part.description}' (part number {best_part.part_number}). Tell them which part this is and that the video and service document are available below."}
+                {"role": "user", "content": f"A technician asked: '{q}'. The matching part is '{best_part.description}' (part number {best_part.part_number}).{citation_hint} Tell them which part this is and that the video and service document are available below."}
             ],
             max_tokens=200,
             reasoning_effort="low",
@@ -726,5 +786,6 @@ def chatbot_ask(q: str):
                 "description": best_part.description,
                 "id": best_part.id
             },
-            "confidence": float(best_score)
+            "confidence": float(best_score),
+            "citation": citation
         }

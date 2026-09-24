@@ -50,6 +50,7 @@ class Video(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     url: str
     timestamp: str
+    title: Optional[str] = None
 
 class ServiceDoc(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -58,6 +59,7 @@ class ServiceDoc(SQLModel, table=True):
 class PartVideoLink(SQLModel, table=True):
     part_id: Optional[int] = Field(default=None, foreign_key="part.id", primary_key=True)
     video_id: Optional[int] = Field(default=None, foreign_key="video.id", primary_key=True)
+    timestamp: Optional[str] = None
 
 class PartServiceDocLink(SQLModel, table=True):
     part_id: Optional[int] = Field(default=None, foreign_key="part.id", primary_key=True)
