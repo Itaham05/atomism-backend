@@ -357,7 +357,7 @@ def get_owned_aggregate(aggregate_id: int, session: Session, current_user: dict)
     aggregate = session.get(Aggregate, aggregate_id)
     if not aggregate:
         raise HTTPException(status_code=404, detail="Aggregate not found")
-        get_owned_variant(aggregate.variant_id, session, current_user)
+    get_owned_variant(aggregate.variant_id, session, current_user)
     return aggregate
 
 def get_part_tenant_id(part, session: Session):
@@ -648,7 +648,7 @@ def get_users(current_user: dict = Depends(get_current_user)):
         return session.exec(select(User)).all()
 
 @app.post("/parts")
-def create_part(part_number: str, description: str, art_id: int, hotspot_x: float = 50, hotspot_y: float = 50, admin: dict = Depends(require_admin)):
+def create_part(part_number: str, description: str, art_id: int, hotspot_x: float = 50, hotspot_y: float = 50, is_alternate: bool = False, is_obsolete: bool = False, superseded_by: str = None, admin: dict = Depends(require_admin)):
     with Session(engine) as session:
         if not part_number.strip() or not description.strip():
             raise HTTPException(status_code=422, detail="part_number and description cannot be empty")
@@ -656,14 +656,14 @@ def create_part(part_number: str, description: str, art_id: int, hotspot_x: floa
         if not art:
             raise HTTPException(status_code=404, detail="art_id does not exist")
         embedding = json.dumps(embedder.encode(description).tolist())
-        new_part = Part(part_number=part_number, description=description, art_id=art_id, embedding=embedding, hotspot_x=hotspot_x, hotspot_y=hotspot_y)
+        new_part = Part(part_number=part_number, description=description, art_id=art_id, embedding=embedding, hotspot_x=hotspot_x, hotspot_y=hotspot_y, is_alternate=is_alternate, is_obsolete=is_obsolete, superseded_by=superseded_by)
         session.add(new_part)
         session.commit()
         session.refresh(new_part)
         return new_part
 
 @app.put("/parts/{part_id}")
-def update_part(part_id: int, part_number: str = None, description: str = None, hotspot_x: float = None, hotspot_y: float = None, admin: dict = Depends(require_admin)):
+def update_part(part_id: int, part_number: str = None, description: str = None, hotspot_x: float = None, hotspot_y: float = None, is_alternate: bool = None, is_obsolete: bool = None, superseded_by: str = None, admin: dict = Depends(require_admin)):
     with Session(engine) as session:
         part = session.get(Part, part_id)
         if not part or get_part_tenant_id(part, session) != admin["tenant_id"]:
@@ -677,6 +677,12 @@ def update_part(part_id: int, part_number: str = None, description: str = None, 
             part.hotspot_x = hotspot_x
         if hotspot_y is not None:
             part.hotspot_y = hotspot_y
+        if is_alternate is not None:
+            part.is_alternate = is_alternate
+        if is_obsolete is not None:
+            part.is_obsolete = is_obsolete
+        if superseded_by is not None:
+            part.superseded_by = superseded_by if superseded_by != "" else None
         session.add(part)
         session.commit()
         session.refresh(part)
@@ -688,6 +694,14 @@ def delete_part(part_id: int, admin: dict = Depends(require_admin)):
         part = session.get(Part, part_id)
         if not part or get_part_tenant_id(part, session) != admin["tenant_id"]:
             raise HTTPException(status_code=404, detail="Part not found")
+        for link in session.exec(select(PartVideoLink).where(PartVideoLink.part_id == part_id)).all():
+            session.delete(link)
+        for link in session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == part_id)).all():
+            session.delete(link)
+        session.flush()
+        session.delete(part)
+        session.commit()
+        return {"deleted": True, "part_id": part_id}
 
 @app.post("/art/{art_id}/parts/bulk")
 def bulk_create_parts(art_id: int, parts: List[BulkPartInput], admin: dict = Depends(require_admin)):
@@ -742,27 +756,28 @@ def chatbot_ask(q: str, current_user: dict = Depends(get_current_user)):
         if not best_part:
             return {"answer": "I couldn't find a matching part for that."}
 
-        citations = []
+        # Build a citation: prefer a linked video (with its per-part timestamp), else a service doc
+        citation = None
         video_link = session.exec(select(PartVideoLink).where(PartVideoLink.part_id == best_part.id)).first()
         if video_link:
             video = session.get(Video, video_link.video_id)
             if video:
-                citations.append({
+                citation = {
                     "type": "video",
                     "url": video.url,
                     "timestamp": video_link.timestamp or video.timestamp,
                     "label": video.title or "Training video",
-                })
-        doc_link = session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == best_part.id)).first()
-        if doc_link:
-            doc = session.get(ServiceDoc, doc_link.servicedoc_id)
-            if doc:
-                citations.append({"type": "servicedoc", "url": doc.url, "label": "Service document"})
+                }
+        if not citation:
+            doc_link = session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == best_part.id)).first()
+            if doc_link:
+                doc = session.get(ServiceDoc, doc_link.servicedoc_id)
+                if doc:
+                    citation = {"type": "servicedoc", "url": doc.url, "label": "Service document"}
 
         citation_hint = ""
-        video_citation = next((c for c in citations if c["type"] == "video"), None)
-        if video_citation and video_citation.get("timestamp"):
-            citation_hint = f" Mention that timestamp {video_citation['timestamp']} in the video shows this exact step."
+        if citation and citation["type"] == "video" and citation.get("timestamp"):
+            citation_hint = f" Mention that timestamp {citation['timestamp']} in the video shows this exact step."
 
         completion = groq_client.chat.completions.create(
             model="openai/gpt-oss-20b",
@@ -785,5 +800,5 @@ def chatbot_ask(q: str, current_user: dict = Depends(get_current_user)):
                 "id": best_part.id
             },
             "confidence": float(best_score),
-            "citations": citations
+            "citation": citation
         }

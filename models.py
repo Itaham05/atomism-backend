@@ -45,6 +45,9 @@ class Part(SQLModel, table=True):
     embedding: Optional[str] = None
     hotspot_x: Optional[float] = None
     hotspot_y: Optional[float] = None
+    is_alternate: bool = False
+    is_obsolete: bool = False
+    superseded_by: Optional[str] = None
 
 class Video(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
