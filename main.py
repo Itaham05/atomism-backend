@@ -266,13 +266,15 @@ def create_variant(model_id: int, name: str, vin: str = None, admin: dict = Depe
         return new_variant
 
 @app.put("/variants/{variant_id}")
-def update_variant(variant_id: int, name: str = None, vin: str = None, admin: dict = Depends(require_admin)):
+def update_variant(variant_id: int, name: str = None, vin: str = None, engine_number: str = None, admin: dict = Depends(require_admin)):
     with Session(engine) as session:
         v = get_owned_variant(variant_id, session, admin)
         if name is not None:
             v.name = name
         if vin is not None:
             v.vin = vin
+        if engine_number is not None:
+            v.engine_number = engine_number
         session.add(v)
         session.commit()
         session.refresh(v)
@@ -661,16 +663,20 @@ def create_part(part_number: str, description: str, art_id: int, hotspot_x: floa
         return new_part
 
 @app.put("/parts/{part_id}")
-def update_part(part_id: int, part_number: str = None, description: str = None, admin: dict = Depends(require_admin)):
+def update_part(part_id: int, part_number: str = None, description: str = None, hotspot_x: float = None, hotspot_y: float = None, admin: dict = Depends(require_admin)):
     with Session(engine) as session:
         part = session.get(Part, part_id)
-        if not part:
+        if not part or get_part_tenant_id(part, session) != admin["tenant_id"]:
             raise HTTPException(status_code=404, detail="Part not found")
         if part_number is not None:
             part.part_number = part_number
         if description is not None:
             part.description = description
             part.embedding = json.dumps(embedder.encode(description).tolist())
+        if hotspot_x is not None:
+            part.hotspot_x = hotspot_x
+        if hotspot_y is not None:
+            part.hotspot_y = hotspot_y
         session.add(part)
         session.commit()
         session.refresh(part)
@@ -680,16 +686,8 @@ def update_part(part_id: int, part_number: str = None, description: str = None, 
 def delete_part(part_id: int, admin: dict = Depends(require_admin)):
     with Session(engine) as session:
         part = session.get(Part, part_id)
-        if not part:
+        if not part or get_part_tenant_id(part, session) != admin["tenant_id"]:
             raise HTTPException(status_code=404, detail="Part not found")
-        for link in session.exec(select(PartVideoLink).where(PartVideoLink.part_id == part_id)).all():
-            session.delete(link)
-        for link in session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == part_id)).all():
-            session.delete(link)
-        session.flush()
-        session.delete(part)
-        session.commit()
-        return {"deleted": True, "part_id": part_id}
 
 @app.post("/art/{art_id}/parts/bulk")
 def bulk_create_parts(art_id: int, parts: List[BulkPartInput], admin: dict = Depends(require_admin)):
