@@ -1,0 +1,5 @@
+model,variant,vin,engine_number,aggregate,assembly,sub_assembly,art_image_url,part_number,description,hotspot_x,hotspot_y,video_url,video_title,video_timestamp,service_doc_url
+Classic 350,350cc Standard,ME3EXAMPLE0000001,EN350STD0001,Braking System,Front Brake,Brake Caliper,https://example.com/diagrams/brake-caliper.png,BC-1001,Front brake caliper bolt,32,41,https://www.youtube.com/watch?v=EXAMPLE,Front Brake Caliper Service,45,https://example.com/docs/brake-caliper-service.pdf
+Classic 350,350cc Standard,,,Braking System,Front Brake,Brake Caliper,,BC-1002,Brake caliper piston seal,60,55,https://www.youtube.com/watch?v=EXAMPLE,Front Brake Caliper Service,134,
+Classic 350,350cc Standard,,,Braking System,Front Brake,Brake Caliper,,BC-1003,Brake pad retaining pin,75,30,,,,
+Classic 350,350cc Standard,,,Braking System,Front Brake,Brake Disc,https://example.com/diagrams/brake-disc.png,BD-2001,Front brake disc 300mm,50,50,,,,https://example.com/docs/brake-disc-inspection.pdf
