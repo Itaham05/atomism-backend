@@ -19,19 +19,26 @@ class BulkPartInput(BaseModel):
     description: str
     hotspot_x: OptionalType[float] = 50
     hotspot_y: OptionalType[float] = 50
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg2://neondb_owner:npg_dYFNtVK8Ur6h@ep-aged-rice-ayyy5kfu.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require")
+def require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}. See README.md for setup instructions.")
+    return value
+
+DATABASE_URL = require_env("DATABASE_URL")
+CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
 engine = create_engine(DATABASE_URL)
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://atomism-frontend.vercel.app"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-SECRET_KEY = os.environ.get("SECRET_KEY", "atomism-dev-secret-change-later")
+SECRET_KEY = require_env("SECRET_KEY")
 ALGORITHM = "HS256"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
