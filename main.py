@@ -562,6 +562,65 @@ def get_art(sub_assembly_id: int, current_user: dict = Depends(get_current_user)
         get_owned_subassembly(sub_assembly_id, session, current_user)
         return session.exec(select(Art).where(Art.sub_assembly_id == sub_assembly_id)).first()
 
+@app.put("/subassemblies/{sub_assembly_id}/art")
+def set_art_image(sub_assembly_id: int, image_url: str, admin: dict = Depends(require_admin)):
+    """Create or replace the diagram image for a sub-assembly. The admin
+    uploads the file to Cloudinary from the browser first (so the backend
+    never has to handle the binary), then calls this with the resulting
+    URL. One sub-assembly has at most one Art record, so this upserts."""
+    with Session(engine) as session:
+        get_owned_subassembly(sub_assembly_id, session, admin)
+        if not image_url.strip():
+            raise HTTPException(status_code=422, detail="image_url cannot be empty")
+        existing = session.exec(select(Art).where(Art.sub_assembly_id == sub_assembly_id)).first()
+        if existing:
+            existing.image_url = image_url
+            session.add(existing)
+            session.commit()
+            session.refresh(existing)
+            return existing
+        new_art = Art(image_url=image_url, sub_assembly_id=sub_assembly_id)
+        session.add(new_art)
+        session.commit()
+        session.refresh(new_art)
+        return new_art
+
+@app.post("/parts/{part_id}/videos")
+def add_video_to_part(part_id: int, url: str, title: str = None, timestamp: str = "0:00", admin: dict = Depends(require_admin)):
+    """Create a Video pointing at an already-uploaded URL (YouTube, Vimeo,
+    or a Cloudinary-hosted file) and link it to a part in one step."""
+    with Session(engine) as session:
+        part = session.get(Part, part_id)
+        if not part or get_part_tenant_id(part, session) != admin["tenant_id"]:
+            raise HTTPException(status_code=404, detail="Part not found")
+        if not url.strip():
+            raise HTTPException(status_code=422, detail="url cannot be empty")
+        video = Video(url=url, timestamp=timestamp, title=title)
+        session.add(video)
+        session.commit()
+        session.refresh(video)
+        session.add(PartVideoLink(part_id=part_id, video_id=video.id, timestamp=timestamp))
+        session.commit()
+        return video
+
+@app.post("/parts/{part_id}/servicedocs")
+def add_servicedoc_to_part(part_id: int, url: str, admin: dict = Depends(require_admin)):
+    """Create a ServiceDoc pointing at an already-uploaded file URL
+    (a Cloudinary-hosted PDF, typically) and link it to a part."""
+    with Session(engine) as session:
+        part = session.get(Part, part_id)
+        if not part or get_part_tenant_id(part, session) != admin["tenant_id"]:
+            raise HTTPException(status_code=404, detail="Part not found")
+        if not url.strip():
+            raise HTTPException(status_code=422, detail="url cannot be empty")
+        doc = ServiceDoc(url=url)
+        session.add(doc)
+        session.commit()
+        session.refresh(doc)
+        session.add(PartServiceDocLink(part_id=part_id, servicedoc_id=doc.id))
+        session.commit()
+        return doc
+
 @app.get("/art/{art_id}/parts")
 def get_parts(art_id: int, current_user: dict = Depends(get_current_user)):
     with Session(engine) as session:
@@ -763,28 +822,28 @@ def chatbot_ask(q: str, current_user: dict = Depends(get_current_user)):
         if not best_part:
             return {"answer": "I couldn't find a matching part for that."}
 
-        # Build a citation: prefer a linked video (with its per-part timestamp), else a service doc
-        citation = None
-        video_link = session.exec(select(PartVideoLink).where(PartVideoLink.part_id == best_part.id)).first()
-        if video_link:
+        # Build citations: EVERY linked video and EVERY linked service doc, not just one.
+        citations = []
+        video_links = session.exec(select(PartVideoLink).where(PartVideoLink.part_id == best_part.id)).all()
+        for video_link in video_links:
             video = session.get(Video, video_link.video_id)
             if video:
-                citation = {
+                citations.append({
                     "type": "video",
                     "url": video.url,
                     "timestamp": video_link.timestamp or video.timestamp,
                     "label": video.title or "Training video",
-                }
-        if not citation:
-            doc_link = session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == best_part.id)).first()
-            if doc_link:
-                doc = session.get(ServiceDoc, doc_link.servicedoc_id)
-                if doc:
-                    citation = {"type": "servicedoc", "url": doc.url, "label": "Service document"}
+                })
+        doc_links = session.exec(select(PartServiceDocLink).where(PartServiceDocLink.part_id == best_part.id)).all()
+        for doc_link in doc_links:
+            doc = session.get(ServiceDoc, doc_link.servicedoc_id)
+            if doc:
+                citations.append({"type": "servicedoc", "url": doc.url, "label": "Service document"})
 
+        video_timestamps = [c["timestamp"] for c in citations if c["type"] == "video" and c.get("timestamp")]
         citation_hint = ""
-        if citation and citation["type"] == "video" and citation.get("timestamp"):
-            citation_hint = f" Mention that timestamp {citation['timestamp']} in the video shows this exact step."
+        if video_timestamps:
+            citation_hint = f" Mention that timestamp {video_timestamps[0]} in the video shows this exact step."
 
         completion = groq_client.chat.completions.create(
             model="openai/gpt-oss-20b",
@@ -807,5 +866,5 @@ def chatbot_ask(q: str, current_user: dict = Depends(get_current_user)):
                 "id": best_part.id
             },
             "confidence": float(best_score),
-            "citation": citation
+            "citations": citations
         }
