@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: atomism-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        sync: false   # you paste this in Render's dashboard, never commit it
+      - key: SECRET_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://atomism-frontend.vercel.app
